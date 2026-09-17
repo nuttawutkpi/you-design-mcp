@@ -1,85 +1,63 @@
+import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/dist/cjs/types.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import {
-  ErrorCode,
-  ListResourcesRequestSchema,
-  McpError,
-  ReadResourceRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
 import type { Catalog } from "../catalog.js";
 
-/**
- * Register MCP resources for browsable catalog browsing.
- *
- * Resources (vs tools):
- *   - resources are read-only URIs the model can pull on-demand
- *   - tools are actions the model can invoke
- *
- * Same descriptions as the tool counterparts so the LLM has consistent
- * language across resources and tools.
- */
-
-const DESIGN_SYSTEMS_URI = "you-design://catalog/design-systems";
-const SKILLS_URI = "you-design://catalog/skills";
+const KNOWN_URIS = new Set(["design-systems://catalog", "skills://catalog"]);
 
 export function registerResources(server: Server, catalog: Catalog): void {
-  server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    const [systems, skills] = await Promise.all([
-      catalog.listDesignSystems(),
-      catalog.listSkills(),
-    ]);
-    return {
+  server.setRequestHandler(
+    { method: "resources/list" } as unknown as Parameters<typeof server.setRequestHandler>[0],
+    async () => ({
       resources: [
         {
-          uri: DESIGN_SYSTEMS_URI,
+          uri: "design-systems://catalog",
           name: "Design Systems Catalog",
-          description:
-            "Full JSON catalog of all design systems in you-design (~154 entries). " +
-            "Same data as list_design_systems tool but as a browsable resource URI. " +
-            "USE: load the full catalog into context without invoking a tool. " +
-            "NOTABLE: 'thai-modern' (Starter, cream + terracotta, Noto Sans Thai). " +
-            "Token cost: ~5-8K tokens.",
+          description: "Full list of design system manifests available in this you-design checkout.",
           mimeType: "application/json",
         },
         {
-          uri: SKILLS_URI,
+          uri: "skills://catalog",
           name: "Skills Catalog",
-          description:
-            "Full JSON catalog of all skills in you-design (~160 entries). " +
-            "Same data as list_skills tool but as a browsable resource URI. " +
-            "USE: load the full skills list into context without invoking a tool. " +
-            "Token cost: ~2-3K tokens.",
+          description: "Full list of skills available in this you-design checkout.",
           mimeType: "application/json",
         },
       ],
-    };
-  });
+    }),
+  );
 
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    const { uri } = request.params;
-    if (uri === DESIGN_SYSTEMS_URI) {
-      const systems = await catalog.listDesignSystems();
+  server.setRequestHandler(
+    { method: "resources/read" } as unknown as Parameters<typeof server.setRequestHandler>[0],
+    async (request) => {
+      const uri = (request?.params as { uri?: string } | undefined)?.uri;
+      if (!uri || !KNOWN_URIS.has(uri)) {
+        throw new McpError(
+          ErrorCode.MethodNotFound,
+          `Unknown resource URI: ${uri ?? "(none)"}`,
+        );
+      }
+      if (uri === "design-systems://catalog") {
+        const items = await catalog.listDesignSystems({});
+        return {
+          contents: [
+            {
+              uri,
+              mimeType: "application/json",
+              text: JSON.stringify(items, null, 2),
+            },
+          ],
+        };
+      }
+      const items = await catalog.listSkills({});
       return {
         contents: [
           {
             uri,
             mimeType: "application/json",
-            text: JSON.stringify(systems, null, 2),
+            text: JSON.stringify(items, null, 2),
           },
         ],
-      };
-    }
-    if (uri === SKILLS_URI) {
-      const skills = await catalog.listSkills();
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: "application/json",
-            text: JSON.stringify(skills, null, 2),
-          },
-        ],
-      };
-    }
-    throw new McpError(ErrorCode.MethodNotFound, `Unknown resource: ${uri}`);
-  });
+      }
+      void ErrorCode; // satisfy unused import in some toolchains
+    },
+  );
 }

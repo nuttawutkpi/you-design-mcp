@@ -1,44 +1,16 @@
-you-design-mcp
-Copyright 2026 you-design-mcp contributors
+You Design MCP Server
+Copyright 2026 You Design contributors
 
-This product is a companion to you-design (a fork of OpenDesign), all
-licensed under the Apache License, Version 2.0 (the "License").
-You may obtain a copy of the License at
+This product is a fork of OpenDesign (https://github.com/nexu-io/open-design).
+Original work Copyright 2026 Open Design contributors, licensed under the Apache License, Version 2.0.
 
-    https://www.apache.org/licenses/LICENSE-2.0
+This fork is a derivative work released under the same Apache License, Version 2.0.
+See the LICENSE file in the root of this repository for the full license text.
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-implied. See the License for the specific language governing permissions
-and limitations under the License.
+Modifications from upstream OpenDesign include:
+- Repository name and branding changes ("OpenDesign" -> "You Design")
+- Scope and identifier validation for catalog resources
+- Proper MCP JSON-RPC 2.0 error code mapping for tool/resource handlers
+- Directory scaffolding as a standalone MCP server (you-design-mcp)
 
-================================================================================
-Fork lineage
-================================================================================
-
-Original work (OpenDesign):
-  Copyright 2026 Open Design contributors
-  Licensed under Apache License, Version 2.0
-  Source: https://github.com/nexu-io/open-design
-
-Fork (you-design):
-  A Thai-localized fork of OpenDesign with the following additions:
-  - Track 1: Linux desktop build PR guard (.github/workflows/build-linux-pr.yml)
-  - Track 2: Thai design system (design-systems/thai-modern/)
-  - Track 3: BYOK dead-export cleanup (apps/daemon/src/byok-tools.ts)
-  - Track 4: HyperFrames Thai palette + sample composition
-  - Track 5: Branding rename (OpenDesign → You Design)
-  Source: https://github.com/your-username/you-design
-
-Companion MCP server (you-design-mcp):
-  This product — exposes the you-design catalog as MCP tools over stdio.
-  Source: https://github.com/your-username/you-design-mcp
-
-================================================================================
-Third-party attributions
-================================================================================
-
-This product depends on the Model Context Protocol TypeScript SDK
-(@modelcontextprotocol/sdk), licensed under the MIT License.
-Source: https://github.com/modelcontextprotocol/typescript-sdk
+The original OpenDesign NOTICE file content is preserved in the parent you-design repository.

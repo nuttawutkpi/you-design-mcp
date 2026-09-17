@@ -1,158 +1,180 @@
-import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
-import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-
-/**
- * Read-only filesystem scanner for the you-design catalog.
- *
- * Reads design-systems/, skills/, and plugins/ from the you-design checkout
- * pointed to by YOU_DESIGN_ROOT (default: ../you-design relative to this file).
- *
- * All list methods accept optional { category?, scope?, limit?, offset? }
- * (v0.2) so the calling agent can ask for less data and keep context small.
- * Missing directories or malformed manifests are skipped silently.
- */
+import { promises as fs } from "node:fs";
+import { join, resolve } from "node:path";
 
 export interface DesignSystemSummary {
   id: string;
   name: string;
-  category: string;
-  description?: string;
+  category?: string;
+  preview?: string;
+}
+
+export interface DesignSystemManifest extends DesignSystemSummary {
+  schemaVersion: string;
+  files: string[];
+  craft?: Record<string, unknown>;
 }
 
 export interface SkillSummary {
   id: string;
-  description?: string;
+  name: string;
 }
 
 export interface PluginSummary {
   id: string;
   name: string;
-  scope: "official" | "community" | "registry";
+  scope: "official" | "community" | "experimental";
+  description?: string;
 }
 
-export interface ListOptions {
-  /** Filter design-systems by category. */
-  category?: string;
-  /** Filter plugins by scope. */
-  scope?: "official" | "community" | "registry";
-  /** Max results to return. Default: all. Use ~20 for a paginated top-N view. */
-  limit?: number;
-  /** Skip first N results for pagination. Default: 0. */
-  offset?: number;
+export interface CatalogData {
+  designSystems: Map<string, DesignSystemManifest>;
+  skills: Map<string, SkillSummary>;
+  plugins: Map<string, PluginSummary>;
 }
+
+const VALID_ID = /^[a-z0-9][a-z0-9-_/]*$/;
 
 export class Catalog {
-  constructor(public readonly root: string) {}
+  private readonly root: string;
+  private cache: CatalogData | null = null;
 
-  async listDesignSystems(
-    options: ListOptions = {},
-  ): Promise<DesignSystemSummary[]> {
+  constructor(root: string) {
+    this.root = resolve(root);
+  }
+
+  static resolveRoot(env: NodeJS.ProcessEnv = process.env): string {
+    if (env.YOU_DESIGN_ROOT) return resolve(env.YOU_DESIGN_ROOT);
+    return resolve(process.cwd(), "you-design");
+  }
+
+  async load(): Promise<CatalogData> {
+    if (this.cache) return this.cache;
+    const [ds, sk, pl] = await Promise.all([
+      this.loadDesignSystems(),
+      this.loadSkills(),
+      this.loadPlugins(),
+    ]);
+    this.cache = { designSystems: ds, skills: sk, plugins: pl };
+    return this.cache;
+  }
+
+  private async loadDesignSystems(): Promise<Map<string, DesignSystemManifest>> {
+    const out = new Map<string, DesignSystemManifest>();
     const dir = join(this.root, "design-systems");
-    const entries = await readdir(dir, { withFileTypes: true });
-    const result: DesignSystemSummary[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      if (entry.name.startsWith("_") || entry.name.startsWith(".")) continue;
-      try {
-        const manifestPath = join(dir, entry.name, "manifest.json");
-        const manifest = JSON.parse(await readFile(manifestPath, "utf-8"));
-        if (options.category && manifest.category !== options.category) continue;
-        result.push({
-          id: manifest.id,
-          name: manifest.name,
-          category: manifest.category,
-          description: manifest.description,
-        });
-      } catch {
-        continue;
-      }
-    }
-    result.sort((a, b) => a.id.localeCompare(b.id));
-    return this.paginate(result, options);
-  }
-
-  async getDesignSystem(id: string): Promise<unknown> {
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
-      throw new McpError(
-        ErrorCode.InvalidParams,
-        `Invalid design system id: ${JSON.stringify(id)} (must match /^[a-z0-9]+(?:-[a-z0-9]+)*$/.)`
-      );
-    }
-    const manifestPath = join(this.root, "design-systems", id, "manifest.json");
-    let content: string;
+    let entries: string[];
     try {
-      content = await readFile(manifestPath, "utf-8");
+      entries = await fs.readdir(dir);
     } catch {
-      // ENOENT or other read error -> throw McpError(InvalidParams)
-      // so the caller gets -32602 (not -32603 InternalError)
-      throw new McpError(
-        ErrorCode.InvalidParams,
-        `Design system not found: ${JSON.stringify(id)}`
-      );
+      return out;
     }
-    return JSON.parse(content);
-  }
-
-  async listSkills(options: ListOptions = {}): Promise<SkillSummary[]> {
-    const dir = join(this.root, "skills");
-    const entries = await readdir(dir, { withFileTypes: true });
-    const result: SkillSummary[] = [];
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
+      const manifestPath = join(dir, entry, "manifest.json");
       try {
-        const skillMd = await readFile(join(dir, entry.name, "SKILL.md"), "utf-8");
-        // Take the first non-heading, non-empty line as the description
-        const lines = skillMd.split("\n");
-        const desc = lines
-          .filter((l) => l.trim() && !l.startsWith("#"))
-          .slice(0, 3)
-          .join(" ")
-          .trim();
-        result.push({ id: entry.name, description: desc || undefined });
-      } catch {
-        result.push({ id: entry.name });
-      }
-    }
-    result.sort((a, b) => a.id.localeCompare(b.id));
-    return this.paginate(result, options);
-  }
-
-  async listPlugins(options: ListOptions = {}): Promise<PluginSummary[]> {
-    const result: PluginSummary[] = [];
-    const allScopes: Array<{ dir: string; scope: PluginSummary["scope"] }> = [
-      { dir: join(this.root, "plugins", "_official"), scope: "official" },
-      { dir: join(this.root, "plugins", "community"), scope: "community" },
-      { dir: join(this.root, "plugins", "registry"), scope: "registry" },
-    ];
-    for (const { dir, scope } of allScopes) {
-      if (options.scope && options.scope !== scope) continue;
-      try {
-        const entries = await readdir(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.isDirectory()) continue;
-          try {
-            const manifestPath = join(dir, entry.name, "manifest.json");
-            const manifest = JSON.parse(await readFile(manifestPath, "utf-8"));
-            result.push({
-              id: manifest.id || entry.name,
-              name: manifest.name || entry.name,
-              scope,
-            });
-          } catch {
-            result.push({ id: entry.name, name: entry.name, scope });
-          }
+        const raw = await fs.readFile(manifestPath, "utf8");
+        const parsed = JSON.parse(raw) as DesignSystemManifest;
+        if (!parsed.id) {
+          parsed.id = entry;
         }
+        out.set(parsed.id, parsed);
       } catch {
-        // scope dir might not exist
+        // skip malformed manifest
       }
     }
-    return this.paginate(result, options);
+    return out;
   }
 
-  private paginate<T>(items: T[], options: ListOptions): T[] {
-    const offset = options.offset ?? 0;
-    const limit = options.limit ?? items.length;
-    return items.slice(offset, offset + limit);
+  private async loadSkills(): Promise<Map<string, SkillSummary>> {
+    const out = new Map<string, SkillSummary>();
+    const dir = join(this.root, "skills");
+    let entries: string[];
+    try {
+      entries = await fs.readdir(dir);
+    } catch {
+      return out;
+    }
+    for (const entry of entries) {
+      const skillPath = join(dir, entry, "skill.json");
+      try {
+        const raw = await fs.readFile(skillPath, "utf8");
+        const parsed = JSON.parse(raw) as SkillSummary;
+        if (!parsed.id) parsed.id = entry;
+        out.set(parsed.id, parsed);
+      } catch {
+        // skip malformed
+      }
+    }
+    return out;
+  }
+
+  private async loadPlugins(): Promise<Map<string, PluginSummary>> {
+    const out = new Map<string, PluginSummary>();
+    const dir = join(this.root, "plugins");
+    let entries: string[];
+    try {
+      entries = await fs.readdir(dir);
+    } catch {
+      return out;
+    }
+    for (const entry of entries) {
+      const pluginPath = join(dir, entry, "plugin.json");
+      try {
+        const raw = await fs.readFile(pluginPath, "utf8");
+        const parsed = JSON.parse(raw) as PluginSummary;
+        if (!parsed.id) parsed.id = entry;
+        if (!["official", "community", "experimental"].includes(parsed.scope)) {
+          parsed.scope = "community";
+        }
+        out.set(parsed.id, parsed);
+      } catch {
+        // skip malformed
+      }
+    }
+    return out;
+  }
+
+  async listDesignSystems(opts: { category?: string; limit?: number; offset?: number } = {}): Promise<DesignSystemManifest[]> {
+    const data = await this.load();
+    let items = Array.from(data.designSystems.values());
+    if (opts.category) {
+      items = items.filter((d) => d.category === opts.category);
+    }
+    if (typeof opts.offset === "number") {
+      items = items.slice(opts.offset);
+    }
+    if (typeof opts.limit === "number") {
+      items = items.slice(0, opts.limit);
+    }
+    return items;
+  }
+
+  async getDesignSystem(id: string): Promise<DesignSystemManifest> {
+    if (!VALID_ID.test(id)) {
+      throw new Error(`Invalid id: ${id}`);
+    }
+    const data = await this.load();
+    const manifest = data.designSystems.get(id);
+    if (!manifest) {
+      throw new Error(`Design system not found: ${id}`);
+    }
+    return manifest;
+  }
+
+  async listSkills(opts: { limit?: number; offset?: number } = {}): Promise<SkillSummary[]> {
+    const data = await this.load();
+    let items = Array.from(data.skills.values());
+    if (typeof opts.offset === "number") items = items.slice(opts.offset);
+    if (typeof opts.limit === "number") items = items.slice(0, opts.limit);
+    return items;
+  }
+
+  async listPlugins(opts: { scope?: string; limit?: number; offset?: number } = {}): Promise<PluginSummary[]> {
+    const data = await this.load();
+    let items = Array.from(data.plugins.values());
+    if (opts.scope) {
+      items = items.filter((p) => p.scope === opts.scope);
+    }
+    if (typeof opts.offset === "number") items = items.slice(opts.offset);
+    if (typeof opts.limit === "number") items = items.slice(0, opts.limit);
+    return items;
   }
 }
